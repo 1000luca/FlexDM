@@ -1,64 +1,148 @@
-# FlexDM: letter readout of stock Gemma-4-31B-it on vLLM
+# FlexDM
 
-FlexDM is an **inference technique** entry for the [Decision Index](https://github.com/apolinario/decision-index)
-(edition 0.3, Layer 1). It serves the stock checkpoint `google/gemma-4-31B-it` @
-`842da3794eaa0b77d5f08bae87a17459d91ff475` through our own engine. Nothing is trained and no weights of our own are
-published. The engine quantizes the bf16 checkpoint to FP8 when it loads, and it generates no text: each question is a
-single prefill that ends at `Answer: (`, and the answer is a softmax over the option labels' log-probabilities.
+**Stock Gemma-4-31B-it, no training, read better.**
 
-- Engine: `jevlab.vllm_reader:VllmReader`, a `decision_index.engines.Engine` subclass that the kit's own runner loads
-  in-process (vLLM 0.30.0 offline `LLM`, prompt token ids, one request at a time).
-- Options of the submitted run: `layout=header read_twice=true twice_max_tokens=3000 temperature_choice=10.9757
-  temperature_choice_log_slope=-1.7016 temperature_noul=10.732 noul_bias=0`. All other settings are engine defaults.
+FlexDM is an inference-technique entry for the [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index).
+It reads the unmodified `google/gemma-4-31B-it` checkpoint with two prompt changes, questions first and a second read of
+short inputs, and returns a probability for every option in a single prefill. It generates no text, and it has no
+trained weights, adapters or heads.
 
-## How it answers
+## Results
 
-1. **Header layout.** Each request becomes one row per question, in Gemma's chat template with thinking off. The
-   row starts with the list of all the request's questions, then the state, then the question and its options:
+Decision Index 0.4.1, board of 2026-10-21 ([PR #246](https://github.com/apolinario/decision-index/pull/246)):
 
-       <chat head>Questions that will be asked about the context:
-       - <question 1>
-       - <question 2>
+| | FlexDM |
+|---|---|
+| **Full score** | **67.56**, 8th of 223 models |
+| Among entries that are not full fine-tunes (inference techniques, LoRA, LoRA + head) | **tied 1st** with AJev lm6q (LoRA, 67.57) |
+| Among the 26 inference techniques | **1st** (next: Aleria Judge 1.1.1, 66.67) |
+| Private tests, same skills (60% of Full) | 62.98 |
+| Private tests, new domains (40% of Full) | **58.52**: highest of any entry that is not a full fine-tune, 4th overall |
+| Public 0.3 index (shown on the board, not counted since 0.4) | 63.63 |
+| Maintainers' rerun with our code | 100.00% decision agreement on 831 rows (FP8 bar: 96%) |
+| Latency, board measurement (one RTX PRO 6000, one request at a time) | median 109 ms, mean 301 ms, p95 1,106 ms |
 
-       Context:
-       <state>
+FlexDM is the highest-ranked entry on the board that uses no trained weights. The board counts Full scores less than 0.9
+apart as a tie. Full results of the public run are in
+[1000luca/FlexDM-decision-index](https://huggingface.co/datasets/1000luca/FlexDM-decision-index).
 
-       Question: <question i>
-       Options:
-       (A) <option>
-       (B) <option><chat tail, thinking off>Answer: (
+### Where the gain comes from
 
-   Each part is tokenized on its own, as wcole3/jev-brain builds it. A state that is not a string is written as JSON
-   (`json.dumps`, `ensure_ascii=False`), and arrays of 8 or more elements get their positions written in (`_index`),
-   following decider. Options keep the
-   request's order. Questions with up to 10 options use labels A-J. Wider questions give each option its own
-   single-token label (A-Z, then two-letter labels), up to 255. A yes/no (`noul`) question has the two options `no`
-   and `yes`, and its answer is P(yes). Every benchmark uses this same rendering: there are no per-benchmark prompts,
-   rules or post-processing.
-2. **Label readout at `Answer: (`.** vLLM runs one step (`max_tokens=1`, `logprob_token_ids` = the labels of the
-   shown options, `logprobs_mode=raw_logprobs`) and returns the log-probabilities of the labels after Gemma's final
-   soft cap. Questions with more than 128 options are read in chunks of 128 labels, with the same prompt. All rows of
-   one request go to vLLM in a single `generate` call, and prefix caching shares their common prefix (chat head,
-   question list, state).
-3. **Read twice, for requests of up to 3,000 tokens.** If a request read once has at most 3,000 tokens (the shared
-   prefix plus every question row), the user turn is written twice in each of its rows, following
-   shisa-ai/shisa-de-2. The second copy (question list, state, question and options) comes after
-   `\n\nRead the same input again before answering:\n`. Larger requests are read once. On our 2,000-row public
-   sample this applied to 15.7% of questions.
-4. **Temperatures per question type, fitted on off-suite calibration data.** choice:
-   `T = 10.9757 - 1.7016 * ln(number of options)` (floored at 0.05). noul: `T = 10.732`, with no bias. A temperature
-   only rescales the probabilities: it never changes the top answer.
-5. **FP8 vLLM serving.** vLLM 0.30.0 with online `fp8_per_block` quantization at load (weights in 128x128 blocks,
-   activations in 1x128), a bf16 KV cache, the `TRITON_ATTN` attention backend, prefix caching and
-   `max_model_len=131072`. The engine sets `VLLM_USE_DEEP_GEMM=0`: on sm_120, block FP8 with DeepGEMM fails, so vLLM
-   uses its CUTLASS kernel instead.
+Three board entries run the same stock Gemma-4-31B-it weights with different reading methods:
 
-`environment.json` (`model_source`) records every setting the engine passes to vLLM:
+| Entry | How it reads | Same skills | New domains | Full |
+|---|---|---:|---:|---:|
+| Decider chat | state first, then the question | 56.88 | 54.01 | 61.63 |
+| jev-brain | the request's questions listed before the state | 61.56 | 54.29 | 64.61 |
+| **FlexDM** | questions first, and inputs up to 3,000 tokens read twice | **62.98** | **58.52** | **67.56** |
+
+The three engines also differ in serving details, so the steps are indicative, not a controlled ablation. In our own
+paired test on a 2,000-row public sample, reading twice added +1.79 to the sample index (90% interval +0.17 to +3.40).
+
+## How it works
+
+Gemma is a causal model: a token can only attend to the tokens before it. If the state comes first, the model reads it
+without knowing what will be asked. FlexDM changes the order of the input and lets the model read short inputs a
+second time.
+
+```
+<chat head>Questions that will be asked about the context:      1. questions first
+- <question 1>
+- <question 2>
+
+Context:
+<state>
+
+Question: <question i>
+Options:
+(A) <option>
+(B) <option>
+
+Read the same input again before answering:                      2. second copy, for inputs of up to 3,000 tokens
+<question list, state, question and options again>
+<chat tail, thinking off>Answer: (                               3. read the option labels here
+```
+
+1. **Questions first** (the header layout of [jev-brain](https://github.com/wcole3/jev-brain)). Every row starts with
+   the list of all the request's questions, so the state is read with the questions already in view.
+2. **Read twice, for short inputs.** If a request read once has at most 3,000 tokens, the whole user turn is written
+   a second time (as in shisa-ai/shisa-de-2). Every token of the second copy can see the complete first copy, questions
+   and options included. On our public sample this covers 15.7% of questions. Longer requests are read once, because
+   the second copy cannot be shared between questions and would cost far more time there.
+3. **Label readout, no generation.** The row ends at `Answer: (`. vLLM runs one step and returns the log-probabilities
+   of the option labels (A, B, C, ...; single-token labels up to 255 options). A yes/no (`noul`) question has the
+   options `no` and `yes`, and its answer is P(yes).
+4. **Calibrated probabilities.** A softmax at a temperature per question type turns label scores into probabilities:
+   choice `T = 10.9757 - 1.7016 * ln(number of options)`, noul `T = 10.732`. The temperatures were fitted on our own
+   data from outside the suite. They change confidence, never the top answer (board ECE 0.044).
+5. **Fast serving.** vLLM 0.30.0, FP8 weights quantized at load, prefix caching. All rows of a request share one
+   cached prefix (chat head, question list, state), so a request with many questions pays for its state once.
+
+Every benchmark uses this same rendering. There are no per-benchmark prompts, rules or post-processing.
+
+## Quick start
+
+Requirements: Linux x86_64, Python 3.12, one GPU with about 70 GB free (we used an RTX PRO 6000 Blackwell 96 GB), an
+NVIDIA driver for CUDA 13.0 or newer, and [uv](https://docs.astral.sh/uv/).
+
+```sh
+git clone https://github.com/1000luca/FlexDM && cd FlexDM
+uv venv .venv --python 3.12 && source .venv/bin/activate
+uv pip install -r requirements.txt --torch-backend=cu130
+hf download google/gemma-4-31B-it --revision 842da3794eaa0b77d5f08bae87a17459d91ff475   # gated: accept the Gemma terms first
+```
+
+Build the 0.3 suite with the [kit](https://github.com/apolinario/decision-index) (`suite rebuild`, then `suite import`;
+the suite is not redistributed here). Then run it with the submitted settings:
+
+```sh
+./run_flexdm.sh runs/flexdm                                  # the public 0.3 suite in ./suite-0.3
+./run_flexdm.sh runs/flexdm-other --rows other-rows.jsonl.gz  # any other rows file
+```
+
+`run_flexdm.sh` picks the GPU with the most free memory (it refuses to start below 72,000 MiB), sets the environment
+and calls the kit's runner. Score with
+`CUDA_VISIBLE_DEVICES="" python -m decision_index score --edition 0.3 --suite-dir suite-0.3 --engine jevlab.vllm_reader:VllmReader --results runs/flexdm/results.jsonl`.
+
+## Reproducing the submitted run
+
+Tag [`v1.0`](https://github.com/1000luca/FlexDM/tree/v1.0) holds the code of the submitted run. Later commits on `main`
+change documentation only. The engine files are byte-identical to the ones the run loaded (sha256 recorded in the
+run's `driver.json`):
+
+    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  jevlab/__init__.py
+    9ee4dbf437531d6093fa52bbcab3e9143f62e451c1450714fe1cb8411351e03c  jevlab/reader.py
+    d69770c5e1e947b3b7aaedc1ed0d435fa441dc2ff08863d4bc3cf88ff22c71b8  jevlab/vllm_reader.py
+
+| | |
+|---|---|
+| Engine | `jevlab.vllm_reader:VllmReader`, loaded in-process by the kit's unmodified runner |
+| Options | `layout=header read_twice=true twice_max_tokens=3000 temperature_choice=10.9757 temperature_choice_log_slope=-1.7016 temperature_noul=10.732 noul_bias=0` (everything else at engine defaults) |
+| Model | `google/gemma-4-31B-it` @ `842da3794eaa0b77d5f08bae87a17459d91ff475`, tokenizer at the same revision |
+| Kit | `apolinario/decision-index` @ `f8552a13b643d39f61185f5951bb5fed16bedf51`, frozen 0.3 suite (`suite verify` matches) |
+| Key packages | vllm 0.30.0, torch 2.13.0+cu130, transformers 5.16.1, tokenizers 0.23.1, flashinfer-python 0.6.18.post1, triton 3.7.1, ninja 1.13.2, huggingface-hub 1.33.0 (full freeze in `requirements.txt`) |
+| Run | one process, one request at a time, `--compact`; 140,178 of 140,178 scored requests answered, none unsupported, no errors; the 442 rows the scorer excludes were run too |
+
+Run it by hand instead of `run_flexdm.sh`:
+
+```sh
+source .venv/bin/activate            # .venv/bin must come first on PATH: FlashInfer's first-run JIT calls its ninja
+export PYTHONPATH=$PWD HF_HUB_OFFLINE=1 HF_HUB_DISABLE_XET=1 CUDA_VISIBLE_DEVICES=0
+python -m decision_index run --engine jevlab.vllm_reader:VllmReader --edition 0.3 --suite-dir suite-0.3 \
+    --option layout=header --option read_twice=true --option twice_max_tokens=3000 \
+    --option temperature_choice=10.9757 --option temperature_choice_log_slope=-1.7016 \
+    --option temperature_noul=10.732 --option noul_bias=0 \
+    --compact --out runs/flexdm
+```
+
+The engine stops on an unknown option rather than ignoring it.
+
+<details>
+<summary>vLLM settings (as recorded in <code>environment.json</code>)</summary>
 
 | setting | value |
 |---|---|
-| model / revision | `google/gemma-4-31B-it` / `842da3794eaa0b77d5f08bae87a17459d91ff475` (tokenizer at the same revision) |
-| quantization / dtype | `fp8_per_block` (online, at load) / `bfloat16` |
+| quantization / dtype | `fp8_per_block` (online at load: weights in 128x128 blocks, activations 1x128) / `bfloat16` |
 | max_model_len / largest accepted row | 131,072 / 131,071 tokens |
 | gpu_memory_utilization | 0.70 |
 | kv_cache_dtype | `auto` (bf16) |
@@ -66,10 +150,32 @@ single prefill that ends at `Answer: (`, and the answer is a softmax over the op
 | enable_prefix_caching / prefix_cache_retention_interval | true / 32 |
 | max_num_batched_tokens / max_num_seqs | 8192 / 256 |
 | enforce_eager / language_model_only / seed | false / true / 0 |
-| logprobs_mode / generation_config | `raw_logprobs` / `vllm` |
-| environment set by the engine | `VLLM_USE_DEEP_GEMM=0` |
+| logprobs_mode / generation_config | `raw_logprobs` (after Gemma's final soft cap) / `vllm` |
+| environment set by the engine | `VLLM_USE_DEEP_GEMM=0` (block FP8 with DeepGEMM fails on sm_120; vLLM uses its CUTLASS kernel) |
 
-## Files
+Questions with more than 128 options are read in chunks of 128 labels with the same prompt. A state that is not a
+string is written as JSON (`ensure_ascii=False`), and arrays of 8 or more elements get `_index` positions, as in decider.
+
+</details>
+
+<details>
+<summary>Limits, memory and latency on our hardware</summary>
+
+- **No truncation.** Rows of up to 131,071 tokens and 2-255 options per question are accepted. Anything larger is
+  recorded as unsupported, never cut. No public 0.3 request reaches either limit (the longest is about 54,000 tokens).
+  The 3,000-token cut only decides whether a request is written once or twice. Every request is read in full.
+- **Memory.** vLLM reserves 70% of the card at start (about 68,500 MiB on a 96 GB card) and stops if that much is not
+  free: about 32 GiB of FP8 weights plus about 32 GB of KV cache. The first start reads the 62 GB bf16 checkpoint,
+  quantizes it and compiles kernels (5-15 minutes); later starts take about a minute.
+- **Latency on our card**, an RTX PRO 6000 Blackwell **Max-Q** (300 W), over the 140,178 scored rows of the full public
+  run: median 146 ms, mean 403 ms, p80 534 ms. Engine time was 15.7 hours for the scored rows plus 6.9 hours for the
+  442 excluded rows. Requests of 33,000-54,000 tokens (some
+  ToolRet and BRIGHT rows, mostly excluded from scoring) take tens of seconds each.
+
+</details>
+
+<details>
+<summary>Files</summary>
 
 | file | purpose |
 |---|---|
@@ -77,143 +183,41 @@ single prefill that ends at `Answer: (`, and the answer is a softmax over the op
 | `jevlab/reader.py` | the prompt layout (`Layout`, `render_question`), shared with our transformers engine |
 | `jevlab/__init__.py` | empty package marker |
 | `requirements.txt` | the exact environment of the run (frozen), kit included |
-| `run_flexdm.sh` | example: pick a GPU, set the environment, run the kit with the submitted options |
+| `run_flexdm.sh` | picks a GPU, sets the environment, runs the kit with the submitted options |
 
-These are byte-identical to the files the submitted run loaded. The run's `driver.json` records their sha256:
+`jevlab/reader.py` also defines `Reader`, a transformers engine we used for experiments. It is not part of this entry,
+and with its default `attn_block=512` it imports `jevlab/attention.py`, which this repository leaves out. The vLLM path
+never imports it.
 
-    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  jevlab/__init__.py
-    9ee4dbf437531d6093fa52bbcab3e9143f62e451c1450714fe1cb8411351e03c  jevlab/reader.py
-    d69770c5e1e947b3b7aaedc1ed0d435fa441dc2ff08863d4bc3cf88ff22c71b8  jevlab/vllm_reader.py
-
-`jevlab/reader.py` also defines `Reader`, a transformers (HF) engine we used for experiments. It is not part of this
-entry. With its default `attn_block=512` it imports `jevlab/attention.py`, which this repository leaves out. The vLLM
-path never imports that module.
-
-## Install
-
-Requirements: Linux x86_64, Python 3.12, an NVIDIA driver for CUDA 13.0 or newer (ours is 595.58.03), and
-[uv](https://docs.astral.sh/uv/) (we used 0.13.0).
-
-    git clone https://github.com/1000luca/FlexDM && cd FlexDM
-    git checkout <the tag or commit named in the submission>
-    uv venv .venv --python 3.12
-    source .venv/bin/activate
-    uv pip install -r requirements.txt --torch-backend=cu130
-
-`requirements.txt` freezes every package of the run's environment. The key pins are vllm 0.30.0, torch 2.13.0+cu130,
-transformers 5.16.1, tokenizers 0.23.1, flashinfer-python 0.6.18.post1, triton 3.7.1, ninja 1.13.2 and
-huggingface-hub 1.33.0. The kit is pinned to `apolinario/decision-index@f8552a13b643d39f61185f5951bb5fed16bedf51`;
-our run used an editable checkout of that same commit. We originally built the environment with these two commands,
-which give the same top-level versions:
-
-    uv pip install vllm==0.30.0 transformers==5.16.1 tokenizers==0.23.1 --torch-backend=cu130
-    uv pip install "decision-index @ git+https://github.com/apolinario/decision-index@f8552a13b643d39f61185f5951bb5fed16bedf51"
-
-Model weights (gated: accept the Gemma terms on the Hub first; about 62 GB in bf16):
-
-    hf download google/gemma-4-31B-it --revision 842da3794eaa0b77d5f08bae87a17459d91ff475
-
-Build the 0.3 suite with the kit (`suite rebuild`, then `suite import`; see the kit README). The suite is not
-redistributed.
-
-## Run
-
-Use the same environment as our run. The venv's `bin/` must come first on `PATH`, because FlashInfer's first-run JIT
-calls the `ninja` installed there. Set `HF_HUB_OFFLINE=1` once the weights are cached.
-
-    source .venv/bin/activate                   # puts .venv/bin (ninja) first on PATH
-    export PYTHONPATH=$PWD                      # the jevlab package of this repository
-    export HF_HUB_OFFLINE=1 HF_HUB_DISABLE_XET=1
-    export CUDA_VISIBLE_DEVICES=0               # one GPU with about 70 GB free
-
-    python -m decision_index run --engine jevlab.vllm_reader:VllmReader \
-        --edition 0.3 --suite-dir suite-0.3 \
-        --option layout=header --option read_twice=true --option twice_max_tokens=3000 \
-        --option temperature_choice=10.9757 --option temperature_choice_log_slope=-1.7016 \
-        --option temperature_noul=10.732 --option noul_bias=0 \
-        --compact --out runs/flexdm
-    CUDA_VISIBLE_DEVICES="" python -m decision_index score --edition 0.3 --suite-dir suite-0.3 \
-        --engine jevlab.vllm_reader:VllmReader --results runs/flexdm/results.jsonl
-
-For any other rows file (a private test, for example), replace `--edition 0.3 --suite-dir suite-0.3` with
-`--rows <file>`. `./run_flexdm.sh OUT_DIR [more run arguments]` does the same: it picks the GPU with the most free
-memory and refuses to start below 72,000 MiB. The kit runs one process with one request at a time, which is also the
-fastest path this code supports. The engine stops on an unknown option rather than ignoring it.
-
-## Hardware and memory
-
-- One NVIDIA RTX PRO 6000 Blackwell (96 GB). We ran on the 300 W Max-Q Workstation Edition.
-- About **70 GB must be free on the GPU** at start. vLLM reserves `gpu_memory_utilization=0.70` of the card (about
-  68,500 MiB) and stops at once if that much is not free. The reservation covers the FP8 weights (about 32 GiB once
-  loaded) and about 32 GB of KV cache, enough for 1.4 requests of 131,072 tokens.
-- The first start reads the 62 GB bf16 checkpoint, quantizes it and compiles kernels. This takes 5-15 minutes; later
-  starts take about a minute (compile cache in `~/.cache/vllm`).
-
-## Token limit, and no truncation
-
-- Rows of up to **131,071 tokens** (`max_model_len` 131,072, minus one position for the answer slot) and **2-255
-  options** per question are accepted. Longer rows, or questions with more options, are recorded as `unsupported`.
-- **Nothing is ever truncated**: not the state, the questions or the options. No public 0.3 request reaches either
-  limit (the longest is about 54,000 tokens).
-- The 3,000-token read-twice cut only decides whether a request is written once or twice. Every request is read in
-  full either way.
-
-## Latency (our hardware)
-
-Measured on one RTX PRO 6000 Blackwell **Max-Q** (300 W), with one process and one request at a time. Latency is the
-engine's in-process request wall time, including prompt construction and excluding model loading. The source is a
-2,000-row stratified sample of the public suite (about 40 rows per benchmark), reweighted to the suite's row count per
-benchmark. The sample run used the submitted read policy (`layout=header read_twice=true twice_max_tokens=3000`) with
-the engine's default temperatures; temperatures do not change the computation.
-
-| median | mean | p80 |
-|---:|---:|---:|
-| 145 ms | 412 ms | 621 ms |
-
-The sample as run, without reweighting, gives 233 / 835 / 1,352 ms, because it over-represents the long ToolRet and
-BRIGHT rows. The full public run's measured latency is in the results dataset. The board's 600 W card should be faster.
-Requests of 33,000-54,000 tokens (some ToolRet and BRIGHT rows, most of them excluded from scoring) take tens of
-seconds each.
+</details>
 
 ## Disclosures
 
-- **No training.** These are the stock base-model weights. FP8 quantization happens at load time, so the quantized
-  reproduction bar (96% agreement) applies. We publish no weight, adapter, head or scorer files.
-- **No Jev outputs** (Jev API answers) were used anywhere: not in the design, the temperature fit or the checks.
-- **The layout was chosen with public-suite sample runs and an off-suite shadow index**, so the public score is not
-  blind to these choices.
-  - We adopted the header layout after jev-brain's public result, then compared it with the decider chat layout on a
-    2,000-row stratified sample of the public 0.3 suite (sample index 55.39 decider, 60.98 header).
-  - We compared reading twice the same way: 62.82 at the 3,000-token cut. The 6,000-token cut scored 62.92 but was
-    slower, so we kept 3,000.
-  - We also scored these choices on our shadow index: 10,381 requests built from 16 public datasets outside the
-    suite's sources. Its score is on our own scale, not the board's: 66.25 header once, 67.25 with read twice.
-  - We tried and dropped re-reading low-confidence questions with reversed options, an option-position bias
-    correction and mixing layouts. None of them helped.
-- **Temperatures were fitted on our own off-suite rows.** The calibration split has 2,871 requests (5,434 questions)
-  from the same 16 datasets (MASSIVE, WANLI, SciFact, PubHealth, NexusRaven, NESTFUL, TREC-COVID, WANDS, LEDGAR,
-  UNFAIR-ToS, CTI-RCM, CIRCL severity, support tickets, ABCD, PubMedQA, medical abstracts). It is disjoint from the
-  shadow evaluation rows and contains no suite rows.
-  - The fit used one half of the split and was checked on the other half: ECE went from 0.123 to 0.030.
-  - The fit also proposed a noul bias of -1.03. We set it to 0 because every calibration noul question came from one
-    dataset (UNFAIR-ToS). On our public sample the bias would also have changed 13 noul answers and lowered the
-    sample index by 0.31.
-  - The engine's built-in defaults (choice 4.263, noul 7.609) are jev-brain's published fit. This entry overrides
-    them.
-- **Run conditions.** The kit's runner is unmodified. The run used one process, one request at a time and
-  `--compact`. The 442 rows the scorer excludes were run too. The suite is the frozen 0.3 suite (`suite verify`
-  matches the pinned hashes).
+- **No training and no Jev outputs.** These are the stock weights, quantized to FP8 at load, so the quantized
+  reproduction bar applies. No Jev API answers were used anywhere.
+- **Choices made on public data.** We adopted the header layout after jev-brain's public result. We then chose it, and
+  the 3,000-token read-twice cut, with runs on a 2,000-row stratified sample of the public 0.3 suite:
+  - sample index 55.39 with the decider chat layout and 60.98 with the header layout;
+  - 62.82 reading twice at 3,000 tokens and 62.92 at 6,000 tokens (slower, so we kept 3,000).
+
+  We also checked the choices on our own shadow index, built from public datasets outside the suite (66.25 header once,
+  67.25 with read twice, on our own scale).
+- **Tried and dropped:** re-reading low-confidence questions with reversed options, averaging two option orders,
+  an option-position bias correction, and mixing layouts. None of them helped.
+- **Temperatures** were fitted on 2,871 off-suite requests from 16 public datasets, disjoint from the shadow evaluation
+  rows, with no suite rows. Checked on a held-out half, ECE went from 0.123 to 0.030. The fit's noul bias (-1.03) was
+  set to 0, because all of its noul questions came from a single dataset. The engine's built-in defaults are
+  jev-brain's published fit, and this entry overrides them.
 
 ## Credits
 
-- The header layout (the list of the request's questions before the state, each part tokenized on its own) and the
-  per-type temperature scheme come from [wcole3/jev-brain](https://github.com/wcole3/jev-brain) (MIT, Copyright 2026
-  Will Cole). We checked that our token ids are identical to its layout's.
-- The chat layout (`Context:` / `Question:` / `Options:` / `Answer: (`) and the `_index` annotation of long arrays come
-  from decider-ai 1.6.0, [Mapika/decider](https://github.com/Mapika/decider) (Apache-2.0).
-- Reading the user turn twice comes from shisa-ai/shisa-de-2.
-- The evaluation kit is [apolinario/decision-index](https://github.com/apolinario/decision-index). The model is
-  Google's Gemma 4 (Gemma terms of use), which this repository does not redistribute.
+- Header layout and the per-type temperature scheme: [wcole3/jev-brain](https://github.com/wcole3/jev-brain) (MIT,
+  Copyright 2026 Will Cole). Our token ids match its layout exactly.
+- Chat layout (`Context:` / `Question:` / `Options:` / `Answer: (`) and `_index` for long arrays: decider-ai 1.6.0,
+  [Mapika/decider](https://github.com/Mapika/decider) (Apache-2.0).
+- Reading the user turn twice: shisa-ai/shisa-de-2.
+- Evaluation kit: [apolinario/decision-index](https://github.com/apolinario/decision-index). Model: Google's Gemma 4,
+  under the Gemma terms of use, not redistributed here.
 
 ## License
 
