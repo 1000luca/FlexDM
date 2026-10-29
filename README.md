@@ -7,6 +7,10 @@ It reads the unmodified `google/gemma-4-31B-it` checkpoint with two prompt chang
 short inputs, and returns a probability for every option in a single prefill. It generates no text, and it has no
 trained weights, adapters or heads.
 
+**JevBench version:** [`jevbench/`](jevbench/) holds FlexDM-JB, the same reader for
+[JevBench](https://benchmarkheaven.com/jev-models) (choice, noul and score decisions, TypeSafe `/v1/systemone` shape),
+with its pod recipe and local results.
+
 ## Results
 
 Decision Index 0.4.1, board of 2026-10-21 ([PR #246](https://github.com/apolinario/decision-index/pull/246)):
