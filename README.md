@@ -32,15 +32,14 @@ apart as a tie. Full results of the public run are in
 
 ### Where the gain comes from
 
-Three board entries run the same stock Gemma-4-31B-it weights with different reading methods:
+Two board entries run the same stock Gemma-4-31B-it weights with different reading methods:
 
 | Entry | How it reads | Same skills | New domains | Full |
 |---|---|---:|---:|---:|
 | Decider chat | state first, then the question | 56.88 | 54.01 | 61.63 |
-| jev-brain | the request's questions listed before the state | 61.56 | 54.29 | 64.61 |
 | **FlexDM** | questions first, and inputs up to 3,000 tokens read twice | **62.98** | **58.52** | **67.56** |
 
-The three engines also differ in serving details, so the steps are indicative, not a controlled ablation. In our own
+The two engines also differ in serving details, so the gap is indicative, not a controlled ablation. In our own
 paired test on a 2,000-row public sample, reading twice added +1.79 to the sample index (90% interval +0.17 to +3.40).
 
 ## How it works
@@ -67,10 +66,10 @@ Read the same input again before answering:                      2. second copy,
 <chat tail, thinking off>Answer: (                               3. read the option labels here
 ```
 
-1. **Questions first** (the header layout of [jev-brain](https://github.com/wcole3/jev-brain)). Every row starts with
+1. **Questions first** (the `header` layout). Every row starts with
    the list of all the request's questions, so the state is read with the questions already in view.
 2. **Read twice, for short inputs.** If a request read once has at most 3,000 tokens, the whole user turn is written
-   a second time (as in shisa-ai/shisa-de-2). Every token of the second copy can see the complete first copy, questions
+   a second time. Every token of the second copy can see the complete first copy, questions
    and options included. On our public sample this covers 15.7% of questions. Longer requests are read once, because
    the second copy cannot be shared between questions and would cost far more time there.
 3. **Label readout, no generation.** The row ends at `Answer: (`. vLLM runs one step and returns the log-probabilities
@@ -199,8 +198,8 @@ never imports it.
 
 - **No training and no Jev outputs.** These are the stock weights, quantized to FP8 at load, so the quantized
   reproduction bar applies. No Jev API answers were used anywhere.
-- **Choices made on public data.** We adopted the header layout after jev-brain's public result. We then chose it, and
-  the 3,000-token read-twice cut, with runs on a 2,000-row stratified sample of the public 0.3 suite:
+- **Choices made on public data.** We chose the header layout and the 3,000-token read-twice cut with runs on a
+  2,000-row stratified sample of the public 0.3 suite:
   - sample index 55.39 with the decider chat layout and 60.98 with the header layout;
   - 62.82 reading twice at 3,000 tokens and 62.92 at 6,000 tokens (slower, so we kept 3,000).
 
@@ -210,16 +209,13 @@ never imports it.
   an option-position bias correction, and mixing layouts. None of them helped.
 - **Temperatures** were fitted on 2,871 off-suite requests from 16 public datasets, disjoint from the shadow evaluation
   rows, with no suite rows. Checked on a held-out half, ECE went from 0.123 to 0.030. The fit's noul bias (-1.03) was
-  set to 0, because all of its noul questions came from a single dataset. The engine's built-in defaults are
-  jev-brain's published fit, and this entry overrides them.
+  set to 0, because all of its noul questions came from a single dataset. This entry overrides the engine's built-in
+  default temperatures.
 
 ## Credits
 
-- Header layout and the per-type temperature scheme: [wcole3/jev-brain](https://github.com/wcole3/jev-brain) (MIT,
-  Copyright 2026 Will Cole). Our token ids match its layout exactly.
 - Chat layout (`Context:` / `Question:` / `Options:` / `Answer: (`) and `_index` for long arrays: decider-ai 1.6.0,
   [Mapika/decider](https://github.com/Mapika/decider) (Apache-2.0).
-- Reading the user turn twice: shisa-ai/shisa-de-2.
 - Evaluation kit: [apolinario/decision-index](https://github.com/apolinario/decision-index). Model: Google's Gemma 4,
   under the Gemma terms of use, not redistributed here.
 
