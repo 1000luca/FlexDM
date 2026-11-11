@@ -1,4 +1,9 @@
-# FlexDM
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/flexdm-banner.webp">
+    <img src="assets/flexdm-banner-light.webp" alt="FlexDM: Efficient decisions. Flexible inference. Gemma-4-31B" width="100%">
+  </picture>
+</p>
 
 <p align="center">
   <a href="https://huggingface.co/spaces/multimodalart/jev-decision-index"><b>Leaderboard</b></a> ·
@@ -7,6 +12,8 @@
   <a href="https://huggingface.co/1000luca/FlexDM-LoRA-v2.1"><b>Trained version: FlexDM-LoRA</b></a> ·
   <a href="https://1000luca.github.io/blog/flexdm/"><b>Blog</b></a>
 </p>
+
+# FlexDM
 
 **Stock Gemma-4-31B-it, no training, read better.**
 
@@ -20,6 +27,12 @@ trained weights, adapters or heads.
 with its pod recipe and local results.
 
 ## Results
+
+<p align="center">
+  <img src="assets/decision-index-board-2026-10-21.png" alt="The Decision Index leaderboard (Full score) on 2026-10-21: FlexDM · Gemma-4-31B is the blue inference-technique bar at 67.6 in the #3 tied group" width="100%">
+</p>
+<p align="center"><em>The Decision Index leaderboard, Full score view, board data of 2026-10-21. FlexDM · Gemma-4-31B is
+the blue (inference technique) bar at 67.6, next to AJev lm6q (green, LoRA) in the #3 tied group.</em></p>
 
 Decision Index 0.4.1, board of 2026-10-21 ([PR #246](https://github.com/apolinario/decision-index/pull/246)):
 
