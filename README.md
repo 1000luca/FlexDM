@@ -1,5 +1,13 @@
 # FlexDM
 
+<p align="center">
+  <a href="https://huggingface.co/spaces/multimodalart/jev-decision-index"><b>Leaderboard</b></a> ·
+  <a href="https://huggingface.co/datasets/1000luca/FlexDM-decision-index"><b>Public run</b></a> ·
+  <a href="https://github.com/apolinario/decision-index/pull/246"><b>Submission (PR #246)</b></a> ·
+  <a href="https://huggingface.co/1000luca/FlexDM-LoRA-v2.1"><b>Trained version: FlexDM-LoRA</b></a> ·
+  <a href="https://1000luca.github.io/blog/flexdm/"><b>Blog</b></a>
+</p>
+
 **Stock Gemma-4-31B-it, no training, read better.**
 
 FlexDM is an inference-technique entry for the [Jev Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index).
